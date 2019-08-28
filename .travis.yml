@@ -6,21 +6,29 @@ env:
   global:
     - RUST_BACKTRACE: full
 
-os: linux
+matrix:
+  include:
+    - os: osx
+      env: LINT=false
+    - os: linux
+      env: LINT=true
 
 install:
-  - rustup component add clippy
-  - rustup component add rustfmt
+  - |
+    if [[ "$LINT" == "true" ]]; then
+        rustup component add clippy
+        rustup component add rustfmt
+    fi
 
 before_script:
   - rustc -V
   - cargo -V
-  - rustfmt --version
-  - cargo clippy --version
+  - if [[ "$LINT" == "true" ]]; then rustfmt --version; fi
+  - if [[ "$LINT" == "true" ]]; then cargo clippy --version; fi
 
 script:
-  - cargo clippy -- -D warnings
-  - cargo fmt -- --check
+  - if [[ "$LINT" == "true" ]]; then cargo clippy -- -D warnings; fi
+  - if [[ "$LINT" == "true" ]]; then cargo fmt -- --check; fi
   - cargo build
   - cargo test
 
