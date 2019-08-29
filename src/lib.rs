@@ -15,6 +15,7 @@ mod input;
 mod language;
 mod row;
 mod screen;
+mod search;
 mod signal;
 mod text_buffer;
 

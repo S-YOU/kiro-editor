@@ -3,6 +3,7 @@ use crate::input::{InputSeq, KeySeq};
 use crate::language::Language;
 use crate::screen::Screen;
 use crate::text_buffer::{CursorDir, Lines, TextBuffer};
+use crate::search::TextSearch;
 use std::io::{self, Write};
 use std::path::Path;
 use std::str;
@@ -25,6 +26,19 @@ impl FindState {
         }
     }
 }
+
+enum PromptEnd {
+    Canceled,
+    Input,
+}
+pub trait PromptAction {
+    fn on_key(&mut self, _input: &str, _key: InputSeq, _end: bool) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+struct DoNothingOnPrompt;
+impl PromptAction for DoNothingOnPrompt {}
 
 #[derive(PartialEq)]
 enum AfterKeyPress {
@@ -115,10 +129,8 @@ where
     }
 
     fn open_buffer(&mut self) -> io::Result<()> {
-        if let Some(input) = self.prompt(
-            "Open: {} (Empty name for new text buffer, ^G or ESC to cancel)",
-            |_, _, _, _| Ok(()),
-        )? {
+        let template = "Open: {} (Empty name for new text buffer, ^G or ESC to cancel)";
+        if let Some(input) = self.prompt_new(template, DoNothingOnPrompt)? {
             let buf = if input.is_empty() {
                 TextBuffer::default()
             } else {
@@ -170,7 +182,7 @@ where
         let mut create = false;
         if !self.buf().has_file() {
             if let Some(input) =
-                self.prompt("Save as: {} (^G or ESC to cancel)", |_, _, _, _| Ok(()))?
+                self.prompt_new("Save as: {} (^G or ESC to cancel)", DoNothingOnPrompt)?
             {
                 if input.is_empty() {}
                 let prev_lang = self.buf().lang();
@@ -265,14 +277,16 @@ where
     }
 
     fn find(&mut self) -> io::Result<()> {
+        let s = "Search: {} (^F or RIGHT to forward, ^B or LEFT to back, ^G or ESC to cancel)";
+        self.prompt_new(s, search)?;
+        Ok(())
         let (cx, cy, coloff, rowoff) = (
             self.buf().cx(),
             self.buf().cy(),
             self.screen.coloff,
             self.screen.rowoff,
         );
-        let s = "Search: {} (^F or RIGHT to forward, ^B or LEFT to back, ^G or ESC to cancel)";
-        let input = self.prompt(s, Self::on_incremental_find)?;
+        let input = self.prompt_new(s, Self::on_incremental_find)?;
         if input.as_ref().map(String::is_empty).unwrap_or(true) {
             // Canceled. Restore cursor position
             self.buf_mut().set_cursor(cx, cy);
@@ -306,6 +320,59 @@ where
         // Redraw screen
         self.screen.set_dirty_start(self.screen.rowoff);
         Ok(())
+    }
+
+    fn prompt_new<S: AsRef<str>, A: PromptAction>(
+        &mut self,
+        prompt: S,
+        mut action: A,
+    ) -> io::Result<Option<String>> {
+        let mut buf = String::new();
+        let mut canceled = false;
+        let prompt = prompt.as_ref();
+        self.screen.set_info_message(prompt.replacen("{}", "", 1));
+        self.refresh_screen()?;
+
+        while let Some(seq) = self.input.next() {
+            use KeySeq::*;
+
+            if self.screen.maybe_resize(&mut self.input)? {
+                self.refresh_screen()?;
+            }
+
+            let seq = seq?;
+            let mut finished = false;
+
+            match (&seq.key, seq.ctrl) {
+                (Unidentified, ..) => continue,
+                (Key(b'h'), true) | (Key(0x7f), ..) | (DeleteKey, ..) if !buf.is_empty() => {
+                    buf.pop();
+                }
+                (Key(b'g'), true) | (Key(b'q'), true) | (Key(0x1b), ..) => {
+                    finished = true;
+                    canceled = true;
+                }
+                (Key(b'\r'), ..) | (Key(b'm'), true) => {
+                    finished = true;
+                }
+                (Key(b), false) => buf.push(*b as char),
+                (Utf8Key(c), false) => buf.push(*c),
+                _ => {}
+            }
+
+            action.on_key(buf.as_str(), seq, finished)?;
+            if finished {
+                break;
+            }
+            self.screen.set_info_message(prompt.replacen("{}", &buf, 1));
+            self.refresh_screen()?;
+        }
+
+        self.screen
+            .set_info_message(if canceled { "Canceled" } else { "" });
+        self.refresh_screen()?;
+
+        Ok(if canceled { None } else { Some(buf) })
     }
 
     fn prompt<S, F>(&mut self, prompt: S, mut incremental_callback: F) -> io::Result<Option<String>>
